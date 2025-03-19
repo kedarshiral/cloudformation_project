@@ -1,0 +1,128 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudFormation template to provision MWAA, S3, and CodePipeline for DAGs.
+
+Resources:
+  # S3 Bucket for DAGs
+  DagsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub ${AWS::AccountId}-dags-bucket
+      AccessControl: Public
+
+  # MWAA Environment
+  AirflowEnvironment:
+    Type: AWS::MWAA::Environment
+    Properties:
+      Name: MyAirflowEnvironment
+      ExecutionRoleArn: !GetAtt AirflowExecutionRole.Arn
+      SourceBucketArn: !GetAtt DagsBucket.Arn
+      DagS3Path: dags
+      NetworkConfiguration:
+        SubnetIds: !Ref DefaultSubnets
+        SecurityGroupIds: !Ref DefaultSecurityGroups
+      WebserverAccessMode: PUBLIC_ONLY
+      EnvironmentClass: mw1.small
+      AirflowVersion: 2.4.1
+
+  # IAM Role for MWAA
+  AirflowExecutionRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: airflow.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: MWAA-S3-Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject*
+                  - s3:PutObject*
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt DagsBucket.Arn
+                  - !Sub ${DagsBucket.Arn}/*
+
+  # CodePipeline to sync GitHub DAGs to S3
+  DAGsPipeline:
+    Type: AWS::CodePipeline::Pipeline
+    Properties:
+      RoleArn: !GetAtt CodePipelineRole.Arn
+      Stages:
+        - Name: Source
+          Actions:
+            - Name: GitHub-Source
+              ActionTypeId:
+                Category: Source
+                Owner: ThirdParty
+                Provider: GitHub
+                Version: '1'
+              Configuration:
+                Owner: kedarshiral
+                Repo: cloudformation_project
+                Branch: main
+                OAuthToken: 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
+              OutputArtifacts:
+                - Name: SourceOutput
+        - Name: Deploy
+          Actions:
+            - Name: S3-Deploy
+              ActionTypeId:
+                Category: Deploy
+                Owner: AWS
+                Provider: S3
+                Version: '1'
+              Configuration:
+                BucketName: !Ref DagsBucket
+                Extract: true
+                ObjectKey: dags/
+              InputArtifacts:
+                - Name: SourceOutput
+
+  # IAM Role for CodePipeline
+  CodePipelineRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: codepipeline.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: CodePipeline-S3-Access
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetObject*
+                  - s3:PutObject*
+                  - s3:ListBucket
+                Resource:
+                  - !GetAtt DagsBucket.Arn
+                  - !Sub ${DagsBucket.Arn}/*
+              - Effect: Allow
+                Action:
+                  - codecommit:GitPull
+                  - s3:GetObject*
+                  - s3:PutObject*
+                Resource: '*'
+
+Outputs:
+  AirflowWebURL:
+    Description: URL of the Airflow Web UI
+    Value: !GetAtt AirflowEnvironment.WebserverUrl
+  DagsBucketName:
+    Description: Name of the S3 bucket for DAGs
+    Value: !Ref DagsBucket
+  CodePipelineName:
+    Description: Name of the CodePipeline
+    Value: !Ref DAGsPipeline
